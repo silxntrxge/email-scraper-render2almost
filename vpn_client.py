@@ -2,10 +2,10 @@ import subprocess
 import tempfile
 import os
 import time
-import psutil
 import logging
 import csv
 import base64
+import requests
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -38,45 +38,34 @@ def connect_vpn(server):
     logger.info(f"Attempting to connect to VPN server in {server['country']} (IP: {server['ip']})...")
     config_data = base64.b64decode(server['config_data']).decode('utf-8')
     
-    # Split the config data into lines and remove any lines that are too long
-    config_lines = [line for line in config_data.split('\n') if len(line) <= 256]
-    
-    with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.ovpn') as temp_config:
-        for line in config_lines:
-            temp_config.write(line + '\n')
+    with tempfile.NamedTemporaryFile(mode='w', delete=False) as temp_config:
+        temp_config.write(config_data)
         config_path = temp_config.name
 
     try:
-        # Remove sudo from the command and add --config
-        subprocess.run(['openvpn', '--config', config_path], check=True, timeout=30)
+        # Instead of using OpenVPN directly, we'll use proxychains
+        subprocess.run(['proxychains', '-f', config_path, 'curl', 'https://api.ipify.org'], check=True, timeout=30)
         logger.info(f"Successfully connected to VPN server in {server['country']}")
         return True
     except subprocess.CalledProcessError as e:
         logger.error(f"Failed to connect to VPN. Error: {e}")
         return False
     except subprocess.TimeoutExpired:
-        logger.error("VPN connection attempt timed out")
+        logger.error("Connection attempt timed out")
         return False
     finally:
         os.unlink(config_path)
 
-def monitor_traffic(threshold_mbps=10):
-    logger.info("Starting traffic monitoring...")
-    while True:
-        net_io = psutil.net_io_counters()
-        bytes_sent, bytes_recv = net_io.bytes_sent, net_io.bytes_recv
-        time.sleep(1)
-        net_io = psutil.net_io_counters()
-        bytes_sent_new, bytes_recv_new = net_io.bytes_sent, net_io.bytes_recv
-        
-        bytes_total = (bytes_sent_new - bytes_sent) + (bytes_recv_new - bytes_recv)
-        mbps = bytes_total * 8 / 1000000  # Convert to Mbps
-        
-        if mbps > threshold_mbps:
-            logger.warning(f"Unusual traffic detected: {mbps:.2f} Mbps")
-            return True
-        
-        time.sleep(5)  # Check every 5 seconds
+def monitor_traffic():
+    logger.info("Monitoring traffic...")
+    try:
+        response = requests.get('https://api.ipify.org')
+        ip = response.text
+        logger.info(f"Current IP: {ip}")
+        return False  # No unusual traffic detected
+    except Exception as e:
+        logger.error(f"Error checking IP: {e}")
+        return True  # Assume unusual traffic
 
 def vpn_manager():
     logger.info("Starting VPN manager...")

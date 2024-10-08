@@ -401,12 +401,17 @@ def require_api_key(f):
     return decorated
 
 def background_scrape(names_list, domain, niches_list, webhook_url, record_id):
-    logger.info("Establishing VPN connection before scraping...")
-    vpn_manager()  # This will connect to a VPN server
-    
-    logger.info("VPN connected. Starting scraping process...")
-    emails = manage_scraping_runs(names_list, domain, niches_list, webhook_url, record_id)
-    logger.info(f"Background scraping completed. Total emails found: {len(emails)}")
+    try:
+        # Connect to VPN before scraping
+        vpn_manager()
+        
+        # Your existing scraping logic here
+        # Make sure to use proxychains for any network requests if necessary
+        emails = manage_scraping_runs(names_list, domain, niches_list, webhook_url, record_id)
+        logger.info(f"Background scraping completed. Total emails found: {len(emails)}")
+
+    except Exception as e:
+        logger.error(f"Error during scraping: {e}")
 
 @app.route('/scrape', methods=['POST'])
 @require_api_key
@@ -437,4 +442,5 @@ def scrape():
 
 if __name__ == '__main__':
     logger.info("Starting the Flask application")
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
+    port = int(os.environ.get('PORT', 8080))
+    app.run(host='0.0.0.0', port=port)

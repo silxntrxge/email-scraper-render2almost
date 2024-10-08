@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y \
     openvpn \
     sudo \
     curl \
+    proxychains \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Google Chrome
