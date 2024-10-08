@@ -5,6 +5,7 @@ import time
 import psutil
 import logging
 import csv
+import base64
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -35,18 +36,26 @@ def get_vpn_servers():
 
 def connect_vpn(server):
     logger.info(f"Attempting to connect to VPN server in {server['country']} (IP: {server['ip']})...")
-    config_data = server['config_data']
+    config_data = base64.b64decode(server['config_data']).decode('utf-8')
+    
+    # Split the config data into lines and remove any lines that are too long
+    config_lines = [line for line in config_data.split('\n') if len(line) <= 256]
+    
     with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.ovpn') as temp_config:
-        temp_config.write(config_data)
+        for line in config_lines:
+            temp_config.write(line + '\n')
         config_path = temp_config.name
 
     try:
-        # Remove sudo from the command
-        subprocess.run(['openvpn', '--config', config_path], check=True)
+        # Remove sudo from the command and add --config
+        subprocess.run(['openvpn', '--config', config_path], check=True, timeout=30)
         logger.info(f"Successfully connected to VPN server in {server['country']}")
         return True
-    except subprocess.CalledProcessError:
-        logger.error("Failed to connect to VPN. Make sure OpenVPN is installed and configured correctly.")
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Failed to connect to VPN. Error: {e}")
+        return False
+    except subprocess.TimeoutExpired:
+        logger.error("VPN connection attempt timed out")
         return False
     finally:
         os.unlink(config_path)
