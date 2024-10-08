@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: email-scraper
+    env: docker
+    plan: free
+    buildCommand: docker build -t email-scraper .
+    startCommand: docker run -p $PORT:$PORT -e PORT=$PORT -e GOOGLE_API_KEY=$GOOGLE_API_KEY email-scraper
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.9.0
+      - key: PORT
+        value: 8080
+      - key: GOOGLE_API_KEY
+        sync: false # This will prompt you to enter the value in the Render dashboard
+    autoDeploy: true
+    region: frankfurt

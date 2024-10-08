@@ -1,0 +1,14 @@
+{
+  "name": "email-extractor-api",
+  "version": "1.0.0",
+  "main": "server.js",
+  "dependencies": {
+    "express": "^4.x",
+    "axios": "^1.x",
+    "cheerio": "^1.x",
+    "validator": "^13.x"
+  },
+  "scripts": {
+    "start": "node server.js"
+  }
+}
