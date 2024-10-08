@@ -161,17 +161,18 @@ def scrape_emails(names, domain, niches, webhook_url=None, record_id=None, all_e
     
     start_time = time.time()
     last_pause_time = start_time
-    consecutive_zero_count = 0
     backoff_time = 60
+    max_pages_per_combination = 5
 
     remaining_names = []
     remaining_niches = []
 
     for name in names:
         for niche in niches:
-            urls = generate_urls([name], domain, [niche])
+            urls = generate_urls([name], domain, [niche], num_pages=max_pages_per_combination)
+            emails_found_for_combination = False
 
-            for url in urls:
+            for url_index, url in enumerate(urls):
                 current_time = time.time()
                 time_since_last_pause = current_time - last_pause_time
 
@@ -183,37 +184,30 @@ def scrape_emails(names, domain, niches, webhook_url=None, record_id=None, all_e
 
                 try:
                     emails = scrape_emails_from_url(driver, url, email_counter)
-                    if not emails:
-                        consecutive_zero_count += 1
-                        logger.info(f"No emails found. Consecutive zero count: {consecutive_zero_count}")
-                        if consecutive_zero_count >= 2:  # Changed this condition
-                            logger.info("Consecutive zeros. Preparing for a new run.")
-                            remaining_names = names[names.index(name):]
-                            remaining_niches = niches[niches.index(niche):]
-                            driver.quit()
-                            return all_emails, email_counter, remaining_names, remaining_niches
-                        logger.info(f"Implementing exponential backoff. Waiting for {backoff_time} seconds...")
-                        time.sleep(backoff_time)
-                        backoff_time = min(backoff_time * 2, 480)
-                    else:
+                    
+                    if emails:
                         all_emails.update(emails)
-                        consecutive_zero_count = 0
-                        backoff_time = 60
+                        emails_found_for_combination = True
+                        logger.info(f"Found {len(emails)} emails for {name} + {niche} on page {url_index + 1}")
+                    else:
+                        logger.info(f"No emails found for {name} + {niche} on page {url_index + 1}")
+
+                    if url_index == max_pages_per_combination - 1 and not emails_found_for_combination:
+                        logger.info(f"No emails found for {name} + {niche} after checking {max_pages_per_combination} pages.")
 
                     delay = random.uniform(3, 7)
                     logger.info(f"Waiting for {delay:.2f} seconds before the next request...")
                     time.sleep(delay)
                 except Exception as e:
                     logger.error(f"Error scraping URL {url}: {e}")
-                    consecutive_zero_count += 1
-                    logger.info(f"Implementing exponential backoff due to error. Waiting for {backoff_time} seconds...")
-                    time.sleep(backoff_time)
-                    backoff_time = min(backoff_time * 2, 480)
+                    if url_index >= 2:  # Only backoff if we've checked at least 3 pages
+                        logger.info(f"Implementing exponential backoff due to error. Waiting for {backoff_time} seconds...")
+                        time.sleep(backoff_time)
+                        backoff_time = min(backoff_time * 2, 480)
 
             completed_combinations += 1
             progress = (completed_combinations / total_combinations) * 100
-            if progress % 20 < (1 / total_combinations) * 100:
-                logger.info(f"Search progress: {progress:.2f}% completed")
+            logger.info(f"Search progress: {progress:.2f}% completed")
 
     driver.quit()
     logger.info("WebDriver closed.")
