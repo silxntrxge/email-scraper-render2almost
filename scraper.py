@@ -20,10 +20,63 @@ from collections import Counter
 import logging
 from bs4 import BeautifulSoup
 from itertools import cycle
+import subprocess
+import csv
+import urllib.request
+import tempfile
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# Add these functions at the beginning of the file, after the imports
+
+def get_vpn_servers():
+    url = 'http://www.vpngate.net/api/iphone/'
+    request = urllib.request.Request(url)
+    response = urllib.request.urlopen(request)
+    data = response.read().decode('utf-8')
+    
+    servers = []
+    for row in csv.reader(data.splitlines()):
+        if len(row) > 14 and row[0] != '*':
+            servers.append({
+                'country': row[6],
+                'ip': row[1],
+                'score': int(row[2]),
+                'ping': int(row[3]),
+                'speed': int(row[4]),
+                'config_data': row[14]
+            })
+    
+    return sorted(servers, key=lambda x: x['score'], reverse=True)
+
+def connect_vpn(server):
+    with tempfile.NamedTemporaryFile(mode='w', delete=False) as temp_file:
+        temp_file.write(server['config_data'])
+        temp_file_path = temp_file.name
+    
+    try:
+        subprocess.run(['sudo', 'openvpn', '--config', temp_file_path], check=True)
+        logger.info(f"Connected to VPN server in {server['country']}")
+        return True
+    except subprocess.CalledProcessError:
+        logger.error("Failed to connect to VPN server")
+        return False
+    finally:
+        os.unlink(temp_file_path)
+
+def disconnect_vpn():
+    try:
+        subprocess.run(['sudo', 'killall', 'openvpn'], check=True)
+        logger.info("Disconnected from VPN")
+        return True
+    except subprocess.CalledProcessError:
+        logger.error("Failed to disconnect from VPN")
+        return False
+
+# Add a global variable to keep track of the current VPN server
+current_vpn_server = None
 
 # Add this new class definition
 class CustomUserAgent:
@@ -100,25 +153,6 @@ def send_to_webhook(emails, webhook_url, record_id):
     except Exception as e:
         logger.error(f"Error sending data to webhook: {e}")
 
-def get_free_proxies():
-    url = "https://free-proxy-list.net/"
-    response = requests.get(url)
-    soup = BeautifulSoup(response.content, 'html.parser')
-    proxies = []
-    for row in soup.find("table", attrs={"class": "table table-striped table-bordered"}).find_all("tr")[1:]:
-        tds = row.find_all("td")
-        try:
-            ip = tds[0].text.strip()
-            port = tds[1].text.strip()
-            host = f"{ip}:{port}"
-            proxies.append(host)
-        except IndexError:
-            continue
-    return cycle(proxies)
-
-# Global variable for proxies
-free_proxies = get_free_proxies()
-
 def initialize_driver(max_attempts=5):
     logger.info("Initializing Selenium WebDriver...")
     attempts = 0
@@ -130,26 +164,21 @@ def initialize_driver(max_attempts=5):
             chrome_options.add_argument("--disable-dev-shm-usage")
             chrome_options.add_argument(f"user-agent={ua.random()}")
             
-            # Add proxy
-            proxy = next(free_proxies)
-            chrome_options.add_argument(f'--proxy-server={proxy}')
-            logger.info(f"Attempting to use proxy: {proxy}")
-            
             chrome_options.binary_location = "/usr/bin/google-chrome-stable"
             
             driver = webdriver.Chrome(options=chrome_options)
             
-            # Test the proxy by loading a simple page
+            # Test the connection by loading a simple page
             driver.set_page_load_timeout(30)  # Set a timeout for page load
             driver.get("https://www.google.com")
             
-            logger.info(f"WebDriver initialized successfully with proxy: {proxy}")
+            logger.info("WebDriver initialized successfully")
             return driver
         except Exception as e:
-            logger.error(f"Error initializing WebDriver with proxy {proxy}: {e}")
+            logger.error(f"Error initializing WebDriver: {e}")
             attempts += 1
             if attempts < max_attempts:
-                logger.info(f"Retrying with a different proxy. Attempt {attempts + 1} of {max_attempts}")
+                logger.info(f"Retrying. Attempt {attempts + 1} of {max_attempts}")
             if 'driver' in locals():
                 driver.quit()
     
@@ -210,7 +239,20 @@ def scrape_emails_from_url(driver, url, email_counter, consecutive_zero_count):
     return unique_emails
 
 def scrape_emails(names, domain, niches, webhook_url=None, record_id=None, all_emails=None, email_counter=None):
+    global current_vpn_server
     logger.info("Starting a scraper run...")
+    
+    # Connect to VPN if not already connected
+    if current_vpn_server is None:
+        servers = get_vpn_servers()
+        for server in servers:
+            if connect_vpn(server):
+                current_vpn_server = server
+                break
+        if current_vpn_server is None:
+            logger.error("Failed to connect to any VPN server. Exiting scrape_emails.")
+            return set(), Counter(), names, niches
+
     driver = initialize_driver()
     if driver is None:
         logger.error("Failed to initialize WebDriver after multiple attempts. Exiting scrape_emails.")
@@ -276,7 +318,7 @@ def scrape_emails(names, domain, niches, webhook_url=None, record_id=None, all_e
                     time.sleep(delay)
                 except Exception as e:
                     logger.error(f"Error scraping URL {url}: {e}")
-                    logger.info("Reinitializing WebDriver with a new proxy...")
+                    logger.info("Reinitializing WebDriver...")
                     driver.quit()
                     driver = initialize_driver()
                     if driver is None:
@@ -291,6 +333,10 @@ def scrape_emails(names, domain, niches, webhook_url=None, record_id=None, all_e
     driver.quit()
     logger.info("WebDriver closed.")
     
+    # Disconnect from VPN at the end of the scraping run
+    disconnect_vpn()
+    current_vpn_server = None
+
     return all_emails, email_counter, [], []  # No remaining names or niches if we've completed all
 
 def manage_scraping_runs(names, domain, niches, webhook_url=None, record_id=None):
