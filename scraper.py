@@ -16,7 +16,6 @@ import validators
 import random
 from urllib.parse import unquote
 from collections import Counter
-from fake_useragent import UserAgent
 
 # Add this new class definition
 class CustomUserAgent:
@@ -37,7 +36,7 @@ class CustomUserAgent:
     def random(self):
         return random.choice(self.user_agents)
 
-# Replace the existing UserAgent initialization with this:
+# Initialize the CustomUserAgent
 ua = CustomUserAgent()
 
 app = Flask(__name__)
