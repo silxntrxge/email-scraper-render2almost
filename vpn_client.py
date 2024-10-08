@@ -15,12 +15,9 @@ def get_vpn_servers():
     servers = []
     with open('textfile.txt', 'r') as file:
         csv_reader = csv.reader(file)
-        header_skipped = False
+        next(csv_reader)  # Skip the header row
         for row in csv_reader:
-            if not header_skipped:
-                header_skipped = True
-                continue
-            if len(row) > 14 and row[0] != '*':  # Ensure we have enough columns and skip the footer
+            if len(row) > 14 and row[0] != '*':
                 try:
                     servers.append({
                         'country': row[6],
@@ -44,11 +41,12 @@ def connect_vpn(server):
         config_path = temp_config.name
 
     try:
-        subprocess.run(['sudo', 'openvpn', '--config', config_path], check=True)
+        # Remove sudo from the command
+        subprocess.run(['openvpn', '--config', config_path], check=True)
         logger.info(f"Successfully connected to VPN server in {server['country']}")
         return True
     except subprocess.CalledProcessError:
-        logger.error("Failed to connect to VPN. Make sure OpenVPN is installed and you have necessary permissions.")
+        logger.error("Failed to connect to VPN. Make sure OpenVPN is installed and configured correctly.")
         return False
     finally:
         os.unlink(config_path)
