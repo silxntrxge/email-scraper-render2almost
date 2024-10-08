@@ -1,5 +1,6 @@
 #tompithsatom/qifshamotrenemail:0.1.0 - works perfectly
 #still stable 0.1.1
+#still stable 0.2.1/0 good
 import sys
 import os
 import json
