@@ -19,6 +19,7 @@ from urllib.parse import unquote
 from collections import Counter
 import logging
 from bs4 import BeautifulSoup
+from itertools import cycle
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -99,23 +100,61 @@ def send_to_webhook(emails, webhook_url, record_id):
     except Exception as e:
         logger.error(f"Error sending data to webhook: {e}")
 
-def initialize_driver():
+def get_free_proxies():
+    url = "https://free-proxy-list.net/"
+    response = requests.get(url)
+    soup = BeautifulSoup(response.content, 'html.parser')
+    proxies = []
+    for row in soup.find("table", attrs={"class": "table table-striped table-bordered"}).find_all("tr")[1:]:
+        tds = row.find_all("td")
+        try:
+            ip = tds[0].text.strip()
+            port = tds[1].text.strip()
+            host = f"{ip}:{port}"
+            proxies.append(host)
+        except IndexError:
+            continue
+    return cycle(proxies)
+
+# Global variable for proxies
+free_proxies = get_free_proxies()
+
+def initialize_driver(max_attempts=5):
     logger.info("Initializing Selenium WebDriver...")
-    try:
-        chrome_options = Options()
-        chrome_options.add_argument("--headless")
-        chrome_options.add_argument("--no-sandbox")
-        chrome_options.add_argument("--disable-dev-shm-usage")
-        # Use the new CustomUserAgent class
-        chrome_options.add_argument(f"user-agent={ua.random()}")
-        chrome_options.binary_location = "/usr/bin/google-chrome-stable"
-        
-        driver = webdriver.Chrome(options=chrome_options)
-        logger.info("WebDriver initialized successfully.")
-        return driver
-    except Exception as e:
-        logger.error(f"Error initializing WebDriver: {e}")
-        sys.exit(1)
+    attempts = 0
+    while attempts < max_attempts:
+        try:
+            chrome_options = Options()
+            chrome_options.add_argument("--headless")
+            chrome_options.add_argument("--no-sandbox")
+            chrome_options.add_argument("--disable-dev-shm-usage")
+            chrome_options.add_argument(f"user-agent={ua.random()}")
+            
+            # Add proxy
+            proxy = next(free_proxies)
+            chrome_options.add_argument(f'--proxy-server={proxy}')
+            logger.info(f"Attempting to use proxy: {proxy}")
+            
+            chrome_options.binary_location = "/usr/bin/google-chrome-stable"
+            
+            driver = webdriver.Chrome(options=chrome_options)
+            
+            # Test the proxy by loading a simple page
+            driver.set_page_load_timeout(30)  # Set a timeout for page load
+            driver.get("https://www.google.com")
+            
+            logger.info(f"WebDriver initialized successfully with proxy: {proxy}")
+            return driver
+        except Exception as e:
+            logger.error(f"Error initializing WebDriver with proxy {proxy}: {e}")
+            attempts += 1
+            if attempts < max_attempts:
+                logger.info(f"Retrying with a different proxy. Attempt {attempts + 1} of {max_attempts}")
+            if 'driver' in locals():
+                driver.quit()
+    
+    logger.error(f"Failed to initialize WebDriver after {max_attempts} attempts.")
+    return None
 
 def generate_urls(names, domain, niches, num_pages=5):
     logger.info("Generating URLs...")
@@ -173,7 +212,10 @@ def scrape_emails_from_url(driver, url, email_counter, consecutive_zero_count):
 def scrape_emails(names, domain, niches, webhook_url=None, record_id=None, all_emails=None, email_counter=None):
     logger.info("Starting a scraper run...")
     driver = initialize_driver()
-    
+    if driver is None:
+        logger.error("Failed to initialize WebDriver after multiple attempts. Exiting scrape_emails.")
+        return set(), Counter(), names, niches
+
     if all_emails is None:
         all_emails = set()
     if email_counter is None:
@@ -234,10 +276,13 @@ def scrape_emails(names, domain, niches, webhook_url=None, record_id=None, all_e
                     time.sleep(delay)
                 except Exception as e:
                     logger.error(f"Error scraping URL {url}: {e}")
-                    if url_index >= 2:  # Only backoff if we've checked at least 3 pages
-                        logger.info(f"Implementing exponential backoff due to error. Waiting for {backoff_time} seconds...")
-                        time.sleep(backoff_time)
-                        backoff_time = min(backoff_time * 2, 480)
+                    logger.info("Reinitializing WebDriver with a new proxy...")
+                    driver.quit()
+                    driver = initialize_driver()
+                    if driver is None:
+                        logger.error("Failed to reinitialize WebDriver. Exiting scrape_emails.")
+                        return all_emails, email_counter, names[names.index(name):], niches[niches.index(niche):]
+                    continue
 
             completed_combinations += 1
             progress = (completed_combinations / total_combinations) * 100
