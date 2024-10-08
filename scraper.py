@@ -181,21 +181,20 @@ def scrape_emails(names, domain, niches, webhook_url=None, record_id=None, all_e
                     last_pause_time = time.time()
                     logger.info("Resuming after 280-second wait.")
 
-                    if consecutive_zero_count > 0:
-                        logger.info("Consecutive zeros after wait. Preparing for a new run.")
-                        remaining_names.append(name)
-                        remaining_niches.append(niche)
-                        break
-
                 try:
                     emails = scrape_emails_from_url(driver, url, email_counter)
                     if not emails:
                         consecutive_zero_count += 1
                         logger.info(f"No emails found. Consecutive zero count: {consecutive_zero_count}")
-                        if consecutive_zero_count > 0:
-                            logger.info(f"Implementing exponential backoff. Waiting for {backoff_time} seconds...")
-                            time.sleep(backoff_time)
-                            backoff_time = min(backoff_time * 2, 480)
+                        if consecutive_zero_count >= 2:  # Changed this condition
+                            logger.info("Consecutive zeros. Preparing for a new run.")
+                            remaining_names = names[names.index(name):]
+                            remaining_niches = niches[niches.index(niche):]
+                            driver.quit()
+                            return all_emails, email_counter, remaining_names, remaining_niches
+                        logger.info(f"Implementing exponential backoff. Waiting for {backoff_time} seconds...")
+                        time.sleep(backoff_time)
+                        backoff_time = min(backoff_time * 2, 480)
                     else:
                         all_emails.update(emails)
                         consecutive_zero_count = 0
@@ -216,16 +215,10 @@ def scrape_emails(names, domain, niches, webhook_url=None, record_id=None, all_e
             if progress % 20 < (1 / total_combinations) * 100:
                 logger.info(f"Search progress: {progress:.2f}% completed")
 
-            if remaining_names:
-                break
-
-        if remaining_names:
-            break
-
     driver.quit()
     logger.info("WebDriver closed.")
     
-    return all_emails, email_counter, remaining_names, remaining_niches
+    return all_emails, email_counter, [], []  # No remaining names or niches if we've completed all
 
 def manage_scraping_runs(names, domain, niches, webhook_url=None, record_id=None):
     all_emails = set()
