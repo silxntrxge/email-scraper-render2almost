@@ -18,6 +18,7 @@ import random
 from urllib.parse import unquote
 from collections import Counter
 import logging
+from bs4 import BeautifulSoup
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -127,7 +128,7 @@ def generate_urls(names, domain, niches, num_pages=5):
     logger.info(f"Generated {len(urls)} URLs.")
     return urls
 
-def scrape_emails_from_url(driver, url, email_counter):
+def scrape_emails_from_url(driver, url, email_counter, consecutive_zero_count):
     logger.info(f"Scraping emails from URL: {url}")
     # Set a new random user agent for each request
     driver.execute_cdp_cmd('Network.setUserAgentOverride', {"userAgent": ua.random()})
@@ -145,6 +146,28 @@ def scrape_emails_from_url(driver, url, email_counter):
     
     unique_emails = set(emails)
     logger.info(f"Found {len(unique_emails)} unique emails on this page.")
+
+    # Check if we've hit consecutive zero results
+    if consecutive_zero_count >= 2:
+        soup = BeautifulSoup(page_source, 'html.parser')
+        
+        # Check for normal search results
+        search_results = soup.find_all('div', class_='g')
+        if search_results:
+            logger.info("Page is okay: Normal search results found.")
+        else:
+            # Check for potential issues
+            captcha = soup.find('div', id='captcha-form')
+            if captcha:
+                logger.warning("CAPTCHA detected on the page.")
+            elif "unusual traffic" in page_source.lower():
+                logger.warning("Unusual traffic message detected.")
+            elif "blocked" in page_source.lower():
+                logger.warning("IP might be blocked by Google.")
+            else:
+                logger.warning("Unexpected page content. Dumping HTML:")
+                logger.warning(page_source[:1000])  # Log first 1000 characters of HTML
+    
     return unique_emails
 
 def scrape_emails(names, domain, niches, webhook_url=None, record_id=None, all_emails=None, email_counter=None):
@@ -163,6 +186,7 @@ def scrape_emails(names, domain, niches, webhook_url=None, record_id=None, all_e
     last_pause_time = start_time
     backoff_time = 60
     max_pages_per_combination = 5
+    consecutive_zero_count = 0
 
     remaining_names = []
     remaining_niches = []
@@ -183,14 +207,24 @@ def scrape_emails(names, domain, niches, webhook_url=None, record_id=None, all_e
                     logger.info("Resuming after 280-second wait.")
 
                 try:
-                    emails = scrape_emails_from_url(driver, url, email_counter)
+                    emails = scrape_emails_from_url(driver, url, email_counter, consecutive_zero_count)
                     
                     if emails:
                         all_emails.update(emails)
                         emails_found_for_combination = True
+                        consecutive_zero_count = 0
                         logger.info(f"Found {len(emails)} emails for {name} + {niche} on page {url_index + 1}")
                     else:
                         logger.info(f"No emails found for {name} + {niche} on page {url_index + 1}")
+                        consecutive_zero_count += 1
+
+                    if consecutive_zero_count >= 3:
+                        logger.info("Three consecutive zero results. Analyzing page content.")
+                        # The page analysis is now done in scrape_emails_from_url
+                        remaining_names = names[names.index(name):]
+                        remaining_niches = niches[niches.index(niche):]
+                        driver.quit()
+                        return all_emails, email_counter, remaining_names, remaining_niches
 
                     if url_index == max_pages_per_combination - 1 and not emails_found_for_combination:
                         logger.info(f"No emails found for {name} + {niche} after checking {max_pages_per_combination} pages.")
@@ -225,8 +259,11 @@ def manage_scraping_runs(names, domain, niches, webhook_url=None, record_id=None
         all_emails.update(emails)
         email_counter.update(counter)
 
-        if not remaining_names:
-            break
+        if remaining_names:
+            logger.info("Starting a new thread with remaining names and niches")
+            thread = threading.Thread(target=scrape_emails, args=(remaining_names, domain, remaining_niches, webhook_url, record_id, all_emails, email_counter))
+            thread.start()
+            thread.join()  # Wait for the thread to complete before continuing
 
         names = remaining_names
         niches = remaining_niches
