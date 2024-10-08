@@ -16,6 +16,11 @@ import validators
 import random
 from urllib.parse import unquote
 from collections import Counter
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 # Add this new class definition
 class CustomUserAgent:
@@ -64,17 +69,17 @@ def get_emails(text, driver):
     return list(set(valid_emails))  # Remove duplicates
 
 def save_emails(emails, output_file='emails.txt'):
-    print(f"Saving {len(emails)} emails to {output_file}...")
+    logger.info(f"Saving {len(emails)} emails to {output_file}...")
     try:
         with open(output_file, 'w') as f:
             for email in emails:
                 f.write(email + '\n')
-        print("Emails saved successfully.")
+        logger.info("Emails saved successfully.")
     except Exception as e:
-        print(f"Error saving emails: {e}")
+        logger.error(f"Error saving emails: {e}")
 
 def send_to_webhook(emails, webhook_url, record_id):
-    print(f"Sending {len(emails)} emails to webhook: {webhook_url}")
+    logger.info(f"Sending {len(emails)} emails to webhook: {webhook_url}")
     try:
         # Remove any potential duplicates and sort the emails
         unique_emails = sorted(set(emails))
@@ -88,12 +93,12 @@ def send_to_webhook(emails, webhook_url, record_id):
         }
         response = requests.post(webhook_url, json=payload)
         response.raise_for_status()
-        print("Emails and recordId sent to webhook successfully.")
+        logger.info("Emails and recordId sent to webhook successfully.")
     except Exception as e:
-        print(f"Error sending data to webhook: {e}")
+        logger.error(f"Error sending data to webhook: {e}")
 
 def initialize_driver():
-    print("Initializing Selenium WebDriver...")
+    logger.info("Initializing Selenium WebDriver...")
     try:
         chrome_options = Options()
         chrome_options.add_argument("--headless")
@@ -104,25 +109,25 @@ def initialize_driver():
         chrome_options.binary_location = "/usr/bin/google-chrome-stable"
         
         driver = webdriver.Chrome(options=chrome_options)
-        print("WebDriver initialized successfully.")
+        logger.info("WebDriver initialized successfully.")
         return driver
     except Exception as e:
-        print(f"Error initializing WebDriver: {e}")
+        logger.error(f"Error initializing WebDriver: {e}")
         sys.exit(1)
 
 def generate_urls(names, domain, niches, num_pages=5):
-    print("Generating URLs...")
+    logger.info("Generating URLs...")
     urls = []
     for name in names:
         for niche in niches:
             for page in range(1, num_pages + 1):
                 url = f"https://www.google.com/search?q=%22{name}%22+%22{domain}%22+%22{niche}%22&start={page}"
                 urls.append(url)
-    print(f"Generated {len(urls)} URLs.")
+    logger.info(f"Generated {len(urls)} URLs.")
     return urls
 
 def scrape_emails_from_url(driver, url, email_counter):
-    print(f"Scraping emails from URL: {url}")
+    logger.info(f"Scraping emails from URL: {url}")
     # Set a new random user agent for each request
     driver.execute_cdp_cmd('Network.setUserAgentOverride', {"userAgent": ua.random()})
     driver.get(url)
@@ -138,11 +143,11 @@ def scrape_emails_from_url(driver, url, email_counter):
         email_counter[email] += 1
     
     unique_emails = set(emails)
-    print(f"Found {len(unique_emails)} unique emails on this page.")
+    logger.info(f"Found {len(unique_emails)} unique emails on this page.")
     return unique_emails
 
 def scrape_emails(names, domain, niches, webhook_url=None, record_id=None):
-    print("Starting the scraper...")
+    logger.info("Starting the scraper...")
     driver = initialize_driver()
     
     all_emails = set()
@@ -162,9 +167,9 @@ def scrape_emails(names, domain, niches, webhook_url=None, record_id=None):
                     emails = scrape_emails_from_url(driver, url, email_counter)
                     if not emails:
                         consecutive_zero_count += 1
-                        print(f"No emails found. Consecutive zero count: {consecutive_zero_count}")
+                        logger.info(f"No emails found. Consecutive zero count: {consecutive_zero_count}")
                         if consecutive_zero_count > 0:
-                            print(f"Implementing exponential backoff. Waiting for {backoff_time} seconds...")
+                            logger.info(f"Implementing exponential backoff. Waiting for {backoff_time} seconds...")
                             time.sleep(backoff_time)
                             backoff_time *= 2  # Double the backoff time for next iteration
                     else:
@@ -174,22 +179,22 @@ def scrape_emails(names, domain, niches, webhook_url=None, record_id=None):
                     
                     # Implement rate limiting
                     delay = random.uniform(3, 7)  # Random delay between 3 and 7 seconds
-                    print(f"Waiting for {delay:.2f} seconds before the next request...")
+                    logger.info(f"Waiting for {delay:.2f} seconds before the next request...")
                     time.sleep(delay)
                 except Exception as e:
-                    print(f"Error scraping URL {url}: {e}")
+                    logger.error(f"Error scraping URL {url}: {e}")
                     consecutive_zero_count += 1
-                    print(f"Implementing exponential backoff due to error. Waiting for {backoff_time} seconds...")
+                    logger.info(f"Implementing exponential backoff due to error. Waiting for {backoff_time} seconds...")
                     time.sleep(backoff_time)
                     backoff_time *= 2  # Double the backoff time for next iteration
             
             completed_combinations += 1
             progress = (completed_combinations / total_combinations) * 100
             if progress % 20 < (1 / total_combinations) * 100:  # Check if we've crossed a 20% threshold
-                print(f"Search progress: {progress:.2f}% completed")
+                logger.info(f"Search progress: {progress:.2f}% completed")
     
     driver.quit()
-    print("WebDriver closed.")
+    logger.info("WebDriver closed.")
     
     email_list = list(all_emails)
     save_emails(email_list)
@@ -197,10 +202,10 @@ def scrape_emails(names, domain, niches, webhook_url=None, record_id=None):
     if webhook_url:
         send_to_webhook(email_list, webhook_url, record_id)
     
-    print(f"Scraper finished successfully. Total unique emails collected: {len(email_list)}")
-    print("Email frequency:")
+    logger.info(f"Scraper finished successfully. Total unique emails collected: {len(email_list)}")
+    logger.info("Email frequency:")
     for email, count in email_counter.most_common():
-        print(f"{email}: {count} times")
+        logger.info(f"{email}: {count} times")
     
     return email_list
 
@@ -215,17 +220,20 @@ def require_api_key(f):
 
 def background_scrape(names_list, domain, niches_list, webhook_url, record_id):
     emails = scrape_emails(names_list, domain, niches_list, webhook_url, record_id)
-    print(f"Background scraping completed. Emails found: {len(emails)}")
+    logger.info(f"Background scraping completed. Emails found: {len(emails)}")
 
 @app.route('/scrape', methods=['POST'])
 @require_api_key
 def scrape():
+    logger.info("Received scrape request")
     data = request.json
     names = data.get('names', '')
     domain = data.get('domain', '')
     niches = data.get('niche', '')
     webhook_url = data.get('webhook', '')
     record_id = data.get('recordId', '')
+
+    logger.info(f"Scrape request parameters: names={names}, domain={domain}, niches={niches}")
 
     names_list = [name.strip() for name in names.split(',') if name.strip()]
     niches_list = [niche.strip() for niche in niches.split(',') if niche.strip()]
@@ -234,7 +242,9 @@ def scrape():
     thread = threading.Thread(target=background_scrape, args=(names_list, domain, niches_list, webhook_url, record_id))
     thread.start()
     
-    return jsonify({'message': 'Scraping started, will be send to:', 'recordId': record_id}), 200
+    logger.info(f"Scraping started for record ID: {record_id}")
+    return jsonify({'message': 'Scraping started, will be sent to:', 'recordId': record_id}), 200
 
 if __name__ == '__main__':
+    logger.info("Starting the Flask application")
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
