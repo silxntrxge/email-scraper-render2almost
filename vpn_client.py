@@ -5,8 +5,14 @@ import os
 import time
 import psutil
 import threading
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 def get_vpn_servers():
+    logger.info("Fetching VPN servers...")
     url = "https://www.vpngate.net/api/iphone/"
     response = requests.get(url)
     servers = []
@@ -21,9 +27,11 @@ def get_vpn_servers():
                 'speed': int(parts[4]),
                 'config_data': parts[14]
             })
+    logger.info(f"Found {len(servers)} VPN servers")
     return sorted(servers, key=lambda x: x['score'], reverse=True)
 
 def connect_vpn(server):
+    logger.info(f"Attempting to connect to VPN server in {server['country']} (IP: {server['ip']})...")
     config_data = server['config_data']
     with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.ovpn') as temp_config:
         temp_config.write(config_data)
@@ -31,12 +39,14 @@ def connect_vpn(server):
 
     try:
         subprocess.run(['sudo', 'openvpn', '--config', config_path], check=True)
+        logger.info(f"Successfully connected to VPN server in {server['country']}")
     except subprocess.CalledProcessError:
-        print("Failed to connect to VPN. Make sure OpenVPN is installed and you have necessary permissions.")
+        logger.error("Failed to connect to VPN. Make sure OpenVPN is installed and you have necessary permissions.")
     finally:
         os.unlink(config_path)
 
 def monitor_traffic(threshold_mbps=10):
+    logger.info("Starting traffic monitoring...")
     while True:
         net_io = psutil.net_io_counters()
         bytes_sent, bytes_recv = net_io.bytes_sent, net_io.bytes_recv
@@ -48,38 +58,40 @@ def monitor_traffic(threshold_mbps=10):
         mbps = bytes_total * 8 / 1000000  # Convert to Mbps
         
         if mbps > threshold_mbps:
-            print(f"Unusual traffic detected: {mbps:.2f} Mbps")
+            logger.warning(f"Unusual traffic detected: {mbps:.2f} Mbps")
             return True
         
         time.sleep(5)  # Check every 5 seconds
 
 def vpn_manager():
+    logger.info("Starting VPN manager...")
     while True:
         servers = get_vpn_servers()
         if not servers:
-            print("No servers available. Retrying in 60 seconds...")
+            logger.warning("No servers available. Retrying in 60 seconds...")
             time.sleep(60)
             continue
 
         server = servers.pop(0)
-        print(f"Connecting to server in {server['country']} (IP: {server['ip']}, Score: {server['score']})")
+        logger.info(f"Connecting to server in {server['country']} (IP: {server['ip']}, Score: {server['score']})")
         
         vpn_process = subprocess.Popen(['sudo', 'openvpn', '--config', create_config_file(server)])
         
         if monitor_traffic():
-            print("Changing server due to unusual traffic...")
+            logger.info("Changing server due to unusual traffic...")
             vpn_process.terminate()
             vpn_process.wait()
         else:
             break
 
 def create_config_file(server):
+    logger.info(f"Creating temporary config file for server in {server['country']}")
     with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.ovpn') as temp_config:
         temp_config.write(server['config_data'])
         return temp_config.name
 
 def main():
-    print("Starting VPN manager...")
+    logger.info("Starting VPN client...")
     vpn_manager()
 
 if __name__ == "__main__":

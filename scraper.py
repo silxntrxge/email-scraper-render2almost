@@ -24,6 +24,7 @@ import subprocess
 import csv
 import urllib.request
 import tempfile
+from vpn_client import vpn_manager
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -32,47 +33,59 @@ logger = logging.getLogger(__name__)
 # Add these functions at the beginning of the file, after the imports
 
 def get_vpn_servers():
+    logger.info("Fetching VPN servers...")
     url = 'http://www.vpngate.net/api/iphone/'
-    request = urllib.request.Request(url)
-    response = urllib.request.urlopen(request)
-    data = response.read().decode('utf-8')
-    
-    servers = []
-    for row in csv.reader(data.splitlines()):
-        if len(row) > 14 and row[0] != '*':
-            servers.append({
-                'country': row[6],
-                'ip': row[1],
-                'score': int(row[2]),
-                'ping': int(row[3]),
-                'speed': int(row[4]),
-                'config_data': row[14]
-            })
-    
-    return sorted(servers, key=lambda x: x['score'], reverse=True)
+    try:
+        request = urllib.request.Request(url)
+        response = urllib.request.urlopen(request)
+        data = response.read().decode('utf-8')
+        
+        servers = []
+        for row in csv.reader(data.splitlines()):
+            if len(row) > 14 and row[0] != '*':
+                servers.append({
+                    'country': row[6],
+                    'ip': row[1],
+                    'score': int(row[2]),
+                    'ping': int(row[3]),
+                    'speed': int(row[4]),
+                    'config_data': row[14]
+                })
+        
+        logger.info(f"Found {len(servers)} VPN servers")
+        return sorted(servers, key=lambda x: x['score'], reverse=True)
+    except Exception as e:
+        logger.error(f"Error fetching VPN servers: {e}")
+        return []
 
 def connect_vpn(server):
+    logger.info(f"Attempting to connect to VPN server in {server['country']}...")
     with tempfile.NamedTemporaryFile(mode='w', delete=False) as temp_file:
         temp_file.write(server['config_data'])
         temp_file_path = temp_file.name
     
     try:
-        subprocess.run(['sudo', 'openvpn', '--config', temp_file_path], check=True)
+        result = subprocess.run(['sudo', 'openvpn', '--config', temp_file_path], check=True, capture_output=True, text=True)
         logger.info(f"Connected to VPN server in {server['country']}")
+        logger.debug(f"OpenVPN output: {result.stdout}")
         return True
-    except subprocess.CalledProcessError:
-        logger.error("Failed to connect to VPN server")
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Failed to connect to VPN server: {e}")
+        logger.error(f"OpenVPN error output: {e.stderr}")
         return False
     finally:
         os.unlink(temp_file_path)
 
 def disconnect_vpn():
+    logger.info("Attempting to disconnect from VPN...")
     try:
-        subprocess.run(['sudo', 'killall', 'openvpn'], check=True)
+        result = subprocess.run(['sudo', 'killall', 'openvpn'], check=True, capture_output=True, text=True)
         logger.info("Disconnected from VPN")
+        logger.debug(f"Killall output: {result.stdout}")
         return True
-    except subprocess.CalledProcessError:
-        logger.error("Failed to disconnect from VPN")
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Failed to disconnect from VPN: {e}")
+        logger.error(f"Killall error output: {e.stderr}")
         return False
 
 # Add a global variable to keep track of the current VPN server
@@ -244,6 +257,7 @@ def scrape_emails(names, domain, niches, webhook_url=None, record_id=None, all_e
     
     # Connect to VPN if not already connected
     if current_vpn_server is None:
+        logger.info("No VPN connection active, attempting to connect...")
         servers = get_vpn_servers()
         for server in servers:
             if connect_vpn(server):
@@ -253,6 +267,7 @@ def scrape_emails(names, domain, niches, webhook_url=None, record_id=None, all_e
             logger.error("Failed to connect to any VPN server. Exiting scrape_emails.")
             return set(), Counter(), names, niches
 
+    logger.info("Initializing WebDriver...")
     driver = initialize_driver()
     if driver is None:
         logger.error("Failed to initialize WebDriver after multiple attempts. Exiting scrape_emails.")
@@ -277,10 +292,12 @@ def scrape_emails(names, domain, niches, webhook_url=None, record_id=None, all_e
 
     for name in names:
         for niche in niches:
+            logger.info(f"Processing combination: name='{name}', niche='{niche}'")
             urls = generate_urls([name], domain, [niche], num_pages=max_pages_per_combination)
             emails_found_for_combination = False
 
             for url_index, url in enumerate(urls):
+                logger.info(f"Processing URL {url_index + 1}/{len(urls)}: {url}")
                 current_time = time.time()
                 time_since_last_pause = current_time - last_pause_time
 
@@ -330,14 +347,15 @@ def scrape_emails(names, domain, niches, webhook_url=None, record_id=None, all_e
             progress = (completed_combinations / total_combinations) * 100
             logger.info(f"Search progress: {progress:.2f}% completed")
 
+    logger.info("Closing WebDriver...")
     driver.quit()
     logger.info("WebDriver closed.")
     
-    # Disconnect from VPN at the end of the scraping run
+    logger.info("Disconnecting from VPN...")
     disconnect_vpn()
     current_vpn_server = None
 
-    return all_emails, email_counter, [], []  # No remaining names or niches if we've completed all
+    return all_emails, email_counter, [], []
 
 def manage_scraping_runs(names, domain, niches, webhook_url=None, record_id=None):
     all_emails = set()
@@ -383,6 +401,10 @@ def require_api_key(f):
     return decorated
 
 def background_scrape(names_list, domain, niches_list, webhook_url, record_id):
+    logger.info("Establishing VPN connection before scraping...")
+    vpn_manager()  # This will connect to a VPN server
+    
+    logger.info("VPN connected. Starting scraping process...")
     emails = manage_scraping_runs(names_list, domain, niches_list, webhook_url, record_id)
     logger.info(f"Background scraping completed. Total emails found: {len(emails)}")
 
@@ -390,24 +412,28 @@ def background_scrape(names_list, domain, niches_list, webhook_url, record_id):
 @require_api_key
 def scrape():
     logger.info("Received scrape request")
-    data = request.json
-    names = data.get('names', '')
-    domain = data.get('domain', '')
-    niches = data.get('niche', '')
-    webhook_url = data.get('webhook', '')
-    record_id = data.get('recordId', '')
+    try:
+        data = request.json
+        names = data.get('names', '')
+        domain = data.get('domain', '')
+        niches = data.get('niche', '')
+        webhook_url = data.get('webhook', '')
+        record_id = data.get('recordId', '')
 
-    logger.info(f"Scrape request parameters: names={names}, domain={domain}, niches={niches}")
+        logger.info(f"Scrape request parameters: names={names}, domain={domain}, niches={niches}")
 
-    names_list = [name.strip() for name in names.split(',') if name.strip()]
-    niches_list = [niche.strip() for niche in niches.split(',') if niche.strip()]
+        names_list = [name.strip() for name in names.split(',') if name.strip()]
+        niches_list = [niche.strip() for niche in niches.split(',') if niche.strip()]
 
-    # Start the scraping process in a background thread
-    thread = threading.Thread(target=background_scrape, args=(names_list, domain, niches_list, webhook_url, record_id))
-    thread.start()
-    
-    logger.info(f"Scraping started for record ID: {record_id}")
-    return jsonify({'message': 'Scraping started, will be sent to:', 'recordId': record_id}), 200
+        # Start the scraping process in a background thread
+        thread = threading.Thread(target=background_scrape, args=(names_list, domain, niches_list, webhook_url, record_id))
+        thread.start()
+        
+        logger.info(f"Scraping started for record ID: {record_id}")
+        return jsonify({'message': 'Scraping started, will be sent to:', 'recordId': record_id}), 200
+    except Exception as e:
+        logger.error(f"Error in scrape endpoint: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
 
 if __name__ == '__main__':
     logger.info("Starting the Flask application")
