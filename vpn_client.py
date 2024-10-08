@@ -1,32 +1,32 @@
 import subprocess
-import requests
 import tempfile
 import os
 import time
 import psutil
-import threading
 import logging
+import csv
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 def get_vpn_servers():
-    logger.info("Fetching VPN servers...")
-    url = "https://www.vpngate.net/api/iphone/"
-    response = requests.get(url)
+    logger.info("Reading VPN servers from local data...")
     servers = []
-    for line in response.text.split('\n')[2:]:
-        parts = line.split(',')
-        if len(parts) > 15:
-            servers.append({
-                'country': parts[6],
-                'ip': parts[1],
-                'score': int(parts[2]),
-                'ping': int(parts[3]),
-                'speed': int(parts[4]),
-                'config_data': parts[14]
-            })
+    with open('textfile.txt', 'r') as file:
+        csv_reader = csv.reader(file)
+        next(csv_reader)  # Skip the header line
+        for row in csv_reader:
+            if len(row) > 14 and row[0] != '*':  # Ensure we have enough columns and skip the footer
+                servers.append({
+                    'country': row[6],
+                    'ip': row[1],
+                    'score': int(row[2]),
+                    'ping': int(row[3]),
+                    'speed': int(row[4]),
+                    'config_data': row[14]
+                })
+    
     logger.info(f"Found {len(servers)} VPN servers")
     return sorted(servers, key=lambda x: x['score'], reverse=True)
 
@@ -40,8 +40,10 @@ def connect_vpn(server):
     try:
         subprocess.run(['sudo', 'openvpn', '--config', config_path], check=True)
         logger.info(f"Successfully connected to VPN server in {server['country']}")
+        return True
     except subprocess.CalledProcessError:
         logger.error("Failed to connect to VPN. Make sure OpenVPN is installed and you have necessary permissions.")
+        return False
     finally:
         os.unlink(config_path)
 
@@ -65,30 +67,25 @@ def monitor_traffic(threshold_mbps=10):
 
 def vpn_manager():
     logger.info("Starting VPN manager...")
-    while True:
-        servers = get_vpn_servers()
-        if not servers:
-            logger.warning("No servers available. Retrying in 60 seconds...")
-            time.sleep(60)
-            continue
+    servers = get_vpn_servers()
+    if not servers:
+        logger.error("No VPN servers available. Cannot proceed.")
+        return
 
-        server = servers.pop(0)
-        logger.info(f"Connecting to server in {server['country']} (IP: {server['ip']}, Score: {server['score']})")
+    for server in servers:
+        logger.info(f"Attempting to connect to server in {server['country']} (IP: {server['ip']}, Score: {server['score']})")
         
-        vpn_process = subprocess.Popen(['sudo', 'openvpn', '--config', create_config_file(server)])
-        
-        if monitor_traffic():
-            logger.info("Changing server due to unusual traffic...")
-            vpn_process.terminate()
-            vpn_process.wait()
+        if connect_vpn(server):
+            if monitor_traffic():
+                logger.info("Changing server due to unusual traffic...")
+                continue
+            else:
+                logger.info("VPN connection established and stable.")
+                return
         else:
-            break
+            logger.warning("Failed to connect. Trying next server...")
 
-def create_config_file(server):
-    logger.info(f"Creating temporary config file for server in {server['country']}")
-    with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.ovpn') as temp_config:
-        temp_config.write(server['config_data'])
-        return temp_config.name
+    logger.error("Failed to establish a stable VPN connection with any server.")
 
 def main():
     logger.info("Starting VPN client...")
