@@ -15,17 +15,23 @@ def get_vpn_servers():
     servers = []
     with open('textfile.txt', 'r') as file:
         csv_reader = csv.reader(file)
-        next(csv_reader)  # Skip the header line
+        header_skipped = False
         for row in csv_reader:
+            if not header_skipped:
+                header_skipped = True
+                continue
             if len(row) > 14 and row[0] != '*':  # Ensure we have enough columns and skip the footer
-                servers.append({
-                    'country': row[6],
-                    'ip': row[1],
-                    'score': int(row[2]),
-                    'ping': int(row[3]),
-                    'speed': int(row[4]),
-                    'config_data': row[14]
-                })
+                try:
+                    servers.append({
+                        'country': row[6],
+                        'ip': row[1],
+                        'score': int(row[2]),
+                        'ping': int(row[3]),
+                        'speed': int(row[4]),
+                        'config_data': row[14]
+                    })
+                except ValueError as e:
+                    logger.warning(f"Skipping invalid row: {row}. Error: {e}")
     
     logger.info(f"Found {len(servers)} VPN servers")
     return sorted(servers, key=lambda x: x['score'], reverse=True)
