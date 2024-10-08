@@ -156,6 +156,9 @@ def scrape_emails(names, domain, niches, webhook_url=None, record_id=None):
     total_combinations = len(names) * len(niches)
     completed_combinations = 0
     
+    start_time = time.time()
+    last_pause_time = start_time
+
     for name in names:
         for niche in niches:
             urls = generate_urls([name], domain, [niche])
@@ -163,6 +166,17 @@ def scrape_emails(names, domain, niches, webhook_url=None, record_id=None):
             backoff_time = 60  # Start with a 1-minute backoff
 
             for url in urls:
+                current_time = time.time()
+                elapsed_time = current_time - start_time
+                time_since_last_pause = current_time - last_pause_time
+
+                # Check if 5 minutes have passed since the last pause
+                if time_since_last_pause >= 300:  # 300 seconds = 5 minutes
+                    logger.info("Process has been running for 5 minutes. Implementing 280-second wait...")
+                    time.sleep(280)
+                    last_pause_time = time.time()
+                    logger.info("Resuming after 280-second wait.")
+
                 try:
                     emails = scrape_emails_from_url(driver, url, email_counter)
                     if not emails:
@@ -171,7 +185,7 @@ def scrape_emails(names, domain, niches, webhook_url=None, record_id=None):
                         if consecutive_zero_count > 0:
                             logger.info(f"Implementing exponential backoff. Waiting for {backoff_time} seconds...")
                             time.sleep(backoff_time)
-                            backoff_time *= 2  # Double the backoff time for next iteration
+                            backoff_time = min(backoff_time * 2, 480)  # Double the backoff time, but cap at 480 seconds
                     else:
                         all_emails.update(emails)
                         consecutive_zero_count = 0  # Reset the counter when emails are found
@@ -186,7 +200,7 @@ def scrape_emails(names, domain, niches, webhook_url=None, record_id=None):
                     consecutive_zero_count += 1
                     logger.info(f"Implementing exponential backoff due to error. Waiting for {backoff_time} seconds...")
                     time.sleep(backoff_time)
-                    backoff_time *= 2  # Double the backoff time for next iteration
+                    backoff_time = min(backoff_time * 2, 480)  # Double the backoff time, but cap at 480 seconds
             
             completed_combinations += 1
             progress = (completed_combinations / total_combinations) * 100
