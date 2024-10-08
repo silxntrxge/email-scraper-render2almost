@@ -147,36 +147,45 @@ def scrape_emails_from_url(driver, url, email_counter):
     logger.info(f"Found {len(unique_emails)} unique emails on this page.")
     return unique_emails
 
-def scrape_emails(names, domain, niches, webhook_url=None, record_id=None):
-    logger.info("Starting the scraper...")
+def scrape_emails(names, domain, niches, webhook_url=None, record_id=None, all_emails=None, email_counter=None):
+    logger.info("Starting a scraper run...")
     driver = initialize_driver()
     
-    all_emails = set()
-    email_counter = Counter()
+    if all_emails is None:
+        all_emails = set()
+    if email_counter is None:
+        email_counter = Counter()
     
     total_combinations = len(names) * len(niches)
     completed_combinations = 0
     
     start_time = time.time()
     last_pause_time = start_time
+    consecutive_zero_count = 0
+    backoff_time = 60
+
+    remaining_names = []
+    remaining_niches = []
 
     for name in names:
         for niche in niches:
             urls = generate_urls([name], domain, [niche])
-            consecutive_zero_count = 0
-            backoff_time = 60  # Start with a 1-minute backoff
 
             for url in urls:
                 current_time = time.time()
-                elapsed_time = current_time - start_time
                 time_since_last_pause = current_time - last_pause_time
 
-                # Check if 5 minutes have passed since the last pause
-                if time_since_last_pause >= 300:  # 300 seconds = 5 minutes
+                if time_since_last_pause >= 300:
                     logger.info("Process has been running for 5 minutes. Implementing 280-second wait...")
                     time.sleep(280)
                     last_pause_time = time.time()
                     logger.info("Resuming after 280-second wait.")
+
+                    if consecutive_zero_count > 0:
+                        logger.info("Consecutive zeros after wait. Preparing for a new run.")
+                        remaining_names.append(name)
+                        remaining_niches.append(niche)
+                        break
 
                 try:
                     emails = scrape_emails_from_url(driver, url, email_counter)
@@ -186,14 +195,13 @@ def scrape_emails(names, domain, niches, webhook_url=None, record_id=None):
                         if consecutive_zero_count > 0:
                             logger.info(f"Implementing exponential backoff. Waiting for {backoff_time} seconds...")
                             time.sleep(backoff_time)
-                            backoff_time = min(backoff_time * 2, 480)  # Double the backoff time, but cap at 480 seconds
+                            backoff_time = min(backoff_time * 2, 480)
                     else:
                         all_emails.update(emails)
-                        consecutive_zero_count = 0  # Reset the counter when emails are found
-                        backoff_time = 60  # Reset backoff time when emails are found
-                    
-                    # Implement rate limiting
-                    delay = random.uniform(3, 7)  # Random delay between 3 and 7 seconds
+                        consecutive_zero_count = 0
+                        backoff_time = 60
+
+                    delay = random.uniform(3, 7)
                     logger.info(f"Waiting for {delay:.2f} seconds before the next request...")
                     time.sleep(delay)
                 except Exception as e:
@@ -201,23 +209,49 @@ def scrape_emails(names, domain, niches, webhook_url=None, record_id=None):
                     consecutive_zero_count += 1
                     logger.info(f"Implementing exponential backoff due to error. Waiting for {backoff_time} seconds...")
                     time.sleep(backoff_time)
-                    backoff_time = min(backoff_time * 2, 480)  # Double the backoff time, but cap at 480 seconds
-            
+                    backoff_time = min(backoff_time * 2, 480)
+
             completed_combinations += 1
             progress = (completed_combinations / total_combinations) * 100
-            if progress % 20 < (1 / total_combinations) * 100:  # Check if we've crossed a 20% threshold
+            if progress % 20 < (1 / total_combinations) * 100:
                 logger.info(f"Search progress: {progress:.2f}% completed")
-    
+
+            if remaining_names:
+                break
+
+        if remaining_names:
+            break
+
     driver.quit()
     logger.info("WebDriver closed.")
     
+    return all_emails, email_counter, remaining_names, remaining_niches
+
+def manage_scraping_runs(names, domain, niches, webhook_url=None, record_id=None):
+    all_emails = set()
+    email_counter = Counter()
+    run_count = 1
+
+    while names and niches:
+        logger.info(f"Starting scraping run #{run_count}")
+        emails, counter, remaining_names, remaining_niches = scrape_emails(names, domain, niches, webhook_url, record_id, all_emails, email_counter)
+        all_emails.update(emails)
+        email_counter.update(counter)
+
+        if not remaining_names:
+            break
+
+        names = remaining_names
+        niches = remaining_niches
+        run_count += 1
+
     email_list = list(all_emails)
     save_emails(email_list)
     
     if webhook_url:
         send_to_webhook(email_list, webhook_url, record_id)
     
-    logger.info(f"Scraper finished successfully. Total unique emails collected: {len(email_list)}")
+    logger.info(f"All scraping runs finished. Total unique emails collected: {len(email_list)}")
     logger.info("Email frequency:")
     for email, count in email_counter.most_common():
         logger.info(f"{email}: {count} times")
@@ -234,8 +268,8 @@ def require_api_key(f):
     return decorated
 
 def background_scrape(names_list, domain, niches_list, webhook_url, record_id):
-    emails = scrape_emails(names_list, domain, niches_list, webhook_url, record_id)
-    logger.info(f"Background scraping completed. Emails found: {len(emails)}")
+    emails = manage_scraping_runs(names_list, domain, niches_list, webhook_url, record_id)
+    logger.info(f"Background scraping completed. Total emails found: {len(emails)}")
 
 @app.route('/scrape', methods=['POST'])
 @require_api_key
